@@ -1,5 +1,5 @@
 # XMPP Chat Protocol
-### Integrants
+### Autor
 Carlos Chew - 17507
 
 ### Instalation
