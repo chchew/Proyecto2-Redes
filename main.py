@@ -1,202 +1,259 @@
-from Register import *
-from Client_XMPP import *
-from tabulate import tabulate
+#Import libraries
+import sys
+import logging
+import getpass
+import sleekxmpp
+import time
+import ssl
 
-if __name__ == '__main__':
-    server = '@redes2020.xyz'
+from optparse import OptionParser
+from sleekxmpp.exceptions import IqError, IqTimeout
+from menu import *
 
-    menu = True
-    login = False
-    group_joined = False
+#Principal Class -> USER
+class EchoBot(sleekxmpp.ClientXMPP):
 
-    print("*"*12,"Bienvenido","*"*12)
+    def __init__(self, jid, password, nick, room):
 
-    menu_not_log = """\nElija una opción:
-    1. Registrar un usuario
-    2. Log in
-    99. Salir
-    """
+        sleekxmpp.ClientXMPP.__init__(self, jid, password)
+        #Nick and room
+        self.room = room
+        self.nick = nick
+
+        #Event handlers
+        self.add_event_handler("session_start", self.start, threaded=True)
+        self.add_event_handler("message", self.message)
+        self.add_event_handler("register", self.register, threaded=True)
+        self.add_event_handler("groupchat_message", self.gp_msg, threaded=True)
+        self.add_event_handler("muc::%s::got_online" % self.room, self.gp_chat, threaded=True)
+
+    #Process event: session_start
+    def start(self, event):
+        print("\nSession start")
+        print("°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°°")
+        self.send_presence()
+        self.get_roster()
+
+    #Receive message
+    def message(self, msg):
+        if msg['type'] in ('normal', 'chat'):
+            print("\n", msg['from'], "says: ")
+            print("==> ", msg['body'],"\n")
+
+    #Register
+    def register(self, iq):
+        resp = self.Iq()
+        resp['type'] = 'set'
+        resp['register']['username'] = self.boundjid.user
+        resp['register']['password'] = self.password
+        try:
+            resp.send(now=True)
+            logging.info("Succesfull register: %s!" % self.boundjid)
+        except IqError as e:
+            logging.error("Error: unable to register %s" %
+                    e.iq['error']['text'])
+            self.disconnect()
+        except IqTimeout:
+            logging.error("Error: no response from server")
+            self.disconnect()
+
+    #Get all users and print them
+    def get_users(self):
+        print(self.client_roster)
+
+    #Delete user from server
+    def delete_user(self):
+        resp = self.Iq()
+        resp['type'] = 'set'
+        resp['from'] = self.boundjid.user
+        resp['register'] = ' '
+        resp['register']['remove'] = ' '
+        try:
+            resp.send(now=True)
+            print("Account deleted for %s!" % self.boundjid)
+        except IqError as e:
+            logging.error("Could not delete account: %s" %
+                    e.iq['error']['text'])
+            self.disconnect()
+        except IqTimeout:
+            logging.error("No response from server.")
+            self.disconnect()
     
-    menu_log = """\nElija una opción:
-    1. Registrar un usuario
-    2. Log out
-    3. Mostrar cuentas
-    4. Eliminar cuenta
-    5. Agregar usuario como contacto
-    6. Mostrar detalles de una cuenta
-    7. Enviar mensaje (Mensaje directo)
-    8. Ingresar a un nuevo grupo
-    9. Enviar mensaje (Mensaje de grupo)
-    10. Definir mensaje de presencia
-    11. Mostrar contactos
-    12. Enviar imagen
-    13. Mostrar rooms
-    99. Salir
-    """
+    def gp_msg(self, msg):
+            if msg['mucnick'] != self.nick and self.nick in msg['body']:
+                print ("%(body)s" % msg)
 
-    while menu:
+    def gp_chat(self, presence):
+            if presence['muc']['nick'] != self.nick:
+                self.send_message(mto=presence['from'].bare,
+                mbody="Hello, %s %s" % (presence['muc']['role'],
+                presence['muc']['nick']),
+                mtype='groupchat')
 
-        if not(login):
-            opcion = input(menu_not_log)
-        else:
-            opcion = input(menu_log)
+    #Send files to another user
+    def send_files(self,receiver, filename):
+        stream = self['xep_0047'].open_stream(receiver)
+        with open(filename) as f:
+            data = f.read()
+            stream.sendall(data)
+    
+if __name__ == '__main__':
+    optp = OptionParser()
 
+    #Verbose
+    optp.add_option('-q', '--quiet', help='set logging to ERROR',
+                    action='store_const', dest='loglevel',
+                    const=logging.ERROR, default=logging.INFO)
+    optp.add_option('-d', '--debug', help='set logging to DEBUG',
+                    action='store_const', dest='loglevel',
+                    const=logging.DEBUG, default=logging.INFO)
+    optp.add_option('-v', '--verbose', help='set logging to COMM',
+                    action='store_const', dest='loglevel',
+                    const=5, default=logging.INFO)
 
-        if (opcion == '1'): 
-            if (not(login)):
-                print ("*"*12,"opcion 1", "*"*12,"\nEn esta opcion se crea un nuevo usuario")
-                username = input('Ingrese username: ')
-                password = input('Ingrese password: ')
-                jid = username + server
-                register = Register(jid, password)
-                if register.connect():
-                    register.process(block=True)
-                else:
-                    print("Error")
+    #Information: jid, password, to, message
+    optp.add_option("-j", "--jid", dest="jid",
+                    help="JID to use")
+    optp.add_option("-p", "--password", dest="password",
+                    help="password to use")
+    optp.add_option("-t", "--to", dest="to",
+                    help="JID to send the message to")
+    optp.add_option("-m", "--message", dest="message",
+                    help="message to send")
+    optp.add_option("-n", "--nick", dest="nick",
+                    help="MUC nickname")
+    optp.add_option("-r", "--room", dest="room",
+                    help="MUC room to join")
+
+    opts, args = optp.parse_args()
+
+    #Login
+    logging.basicConfig(level=opts.loglevel,
+                        format='%(levelname)-8s %(message)s')
+
+    #Call function menu()
+    optmen = int(menu())
+
+    #Add credentials
+    username = input("Username: ")  
+    opts.jid = username+"@redes2020.xyz"
+    opts.password = getpass.getpass("Password: ")
+    opts.nick = input("Nickname: ")
+    opts.room = "jwchat@conference.redes2020.xyz"
+
+    xmpp = EchoBot(opts.jid, opts.password, opts.nick, opts.room)
+    if (optmen == 2):
+        xmpp.del_event_handler("register", xmpp.register)
+    
+    #Register plugins
+    xmpp.register_plugin('xep_0004') # Data forms
+    xmpp.register_plugin('xep_0030') # Service Discovery
+    xmpp.register_plugin('xep_0045') # Multichat
+    xmpp.register_plugin('xep_0060') # PubSub
+    xmpp.register_plugin('xep_0066') # Out-of-band Data
+    xmpp.register_plugin('xep_0077') # In-band Registration
+    xmpp.register_plugin('xep_0199') # Ping
+    #xmpp['xep_0077'].force_registration = True
+
+    #authentication over an unencrypted connection
+    xmpp['feature_mechanisms'].unencrypted_plain = True
+    xmpp.ssl_version = ssl.PROTOCOL_TLS
+
+    #Server connection
+    #if xmpp.connect():
+    if xmpp.connect(('redes2020.xyz', 5222)):
+        xmpp.process(block=False) #True or false? 
+        #Principal menu
+        while(1): 
+            choice = int(menu_in())
+            #Show all users
+            if(choice == 1):
+                print("Contacts: \n")
+                print(xmpp.client_roster) 
+                """
+                i = 0 
+                y = 0
+                for i in range (len(xmpp.client_roster)):
+                    print(xmpp.client_roster[i][y])
+                    i = i + 1
+                """
+            #Add user 
+            elif(choice == 2):
+                new_contact = input("username: \n")
+                friend = new_contact + "@redes2020.xyz"
+                xmpp.send_presence(pto = friend, ptype ='subscribe')
+
+            #Show details from an specific user
+            elif(choice == 3): 
+                print("\n ", xmpp.client_roster, "\n") 
+
+            #Direct message
+            elif(choice == 4): 
+                print("\nPRIVATE CHAT\n")
+                username = input("\n To: ")
+                user_to = username + "@redes2020.xyz"
+                content = input("\n Content: ")
+                xmpp.send_message(mto=user_to, mbody = content, mtype = 'chat')
+                print("\n SENT \n")
+
+            #Send presence message and change status
+            elif(choice == 5):
+                status = input("Status: ")
+                flag = 0
+                while(flag == 0):
+                    sh = int(show_menu())
+                    flag = 1
+                    if(sh == 1):
+                        show = "chat"
+                    elif(sh == 2):
+                        show = "away"
+                    elif(sh == 3):
+                        show = "xa"
+                    elif(sh == 4):
+                        show = "dnd"
+                    else: 
+                        print("Please, try again")
+                        flag = 0
+
+                """
+                self.send_presence(pstatus="i'm not around right now", pshow='xa')
+                Where pstatus controls the type of icon your IM client will show, and you
+                have the options of: chat, away, xa, and dnd. The value 'xa' means
+                extended away and 'dnd' means do not disturb.
+                """
+                xmpp.makePresence(pfrom=xmpp.jid, pstatus=status, pshow=show)
+                
+            #Public chat
+            elif(choice == 6): 
+                xmpp.plugin['xep_0045'].joinMUC(xmpp.room, xmpp.nick)
+                print("\nPUBLIC CHAT\n")
+                msg_all = input("Message: ")
+                xmpp.send_message(mto='all', mbody=msg_all, mtype='groupchat')
+                print("\n SENT \n")
+
+            #Send file
+            elif(choice == 7): 
+                username = input("\n To: ")
+                send_to = username + "@redes2020.xyz"
+                file = input("File: ")
+                xmpp.send_files(send_to, file)
+
+            #Exit
+            elif(choice == 8): 
+                print("See you later")
+                xmpp.disconnect()
+                break
+
+            #Delete account
+            elif(choice == 9): 
+                xmpp.delete_user()
+                xmpp.disconnect()
+                break
+
+            #If the option is not between (1-10)
             else: 
-                print('Si ya esta logeado, no puede crear otra cuenta')
-            
-        #Iniciar sesion o cerrar sesion
-        elif (opcion == '2'):
-            print ("*"*12,"opcion 2", "*"*12,"\nEn esta opcion se inicia o cierra sesion")
-            #Si el usuario no se ha logeado, pide usuario y password
-            if not(login):
-                username = input('Ingrese username: ')
-                password = input('Ingrese password: ')
-                jid = username + server
-                cliente = Client_XMPP(jid, password, username)
-                if cliente.connect():
-                    cliente.process()
-                    print("Se ha logeado correctamente")
-                    login = True
-                else:
-                    print('Error')
-            else:
-                if cliente.connect():
-                    cliente.logout()
-                    login = False
-
-        #Mostrar cuentas
-        elif opcion == '3':
-            print ("*"*12,"opcion 3", "*"*12,"\nEn esta opcion se muestran cuentas")
-            if login:
-                list_users = cliente.show_Users()
-                table = tabulate(list_users, headers=['Email', 'JID', 'Username', 'Name'], tablefmt='grid')
-                print(table)
-            else:
-                print('No ha iniciado sesion')
-
-        #Eliminar cuenta
-        elif opcion == '4':
-            print ("*"*12,"opcion 4", "*"*12,"\nEliminar cuenta")
-            if login:
-                cliente.delete_Account()
-                login = False
-            else:
-                print('No ha iniciado sesion')
-        
-        #Eliminar cuenta
-        elif opcion == '5':
-            print ("*"*12,"opcion 5", "*"*12,"\nAgregar usuarios como contacto")
-            if login:
-                user = input("Ingrese al usuario que desea agregar como contacto: ")
-                cliente.add_Contact(user+server)
-            else:
-                print('No ha iniciado sesion')
-
-        #Mostrar detalles de una cuenta
-        elif opcion == '6':
-            print ("*"*12,"opcion 6", "*"*12,"\nMostrar detalles de una cuenta")
-            if login:
-                jid = input('Ingrese usuario: ')
-                user = cliente.show_one(jid)
-                table = tabulate(user, headers=['Email', 'JID', 'Username', 'Name'], tablefmt='grid')
-                print(table)
-            else:
-                print('No ha iniciado sesion')
-
-        #Enviar mensaje (Mensaje directo)
-        elif opcion == '7':
-            print ("*"*12,"opcion 7", "*"*12,"\nEnviar mensaje (Mensaje directo)")
-            if login:
-                jid = input("Destinatario: ")
-                message = input("Ingrese el mensaje que desea enviarle:\n")
-                cliente.send_Direct_Msg(jid, server, message)
-            else:
-                print('No ha iniciado sesion')
-
-        #Entrar/crear grupo
-        elif opcion == '8':
-            print ("*"*12,"opcion 8", "*"*12,"\nEntrar a un grupo")
-            if login:
-                room = input('Ingrese el room al que desee entrar. Si este no existe, se creara uno nuevo con ese nombre.\nnombre: ')
-                print(room)
-                cliente.create_Room(room)
-                group_joined = True
-            else:
-                print('No ha iniciado sesion')
-
-        #Enviar mensaje (Mensaje grupal)
-        elif opcion == '9':
-            print ("*"*12,"opcion 9", "*"*12,"\nEnviar mensaje a grupo")
-            if login: 
-                if group_joined:
-                    room = input('Ingrese el room al que desea enviar el mensaje: ')
-                    msg = input('Ingrese el mensaje que desea enviarle al grupo:\n')
-                    print(room)
-                    cliente.send_Msg_group(room, msg)                    
-                else:
-                    print('Aun no pertenece a ningun grupo, entre a uno primero')
-            else:
-                print("No ha iniciado sesion")
-
-        #Definir mensaje de presencia
-        elif opcion == '10':
-            print ("*"*12,"opcion 10", "*"*12,"\nDefinir mensaje de presencia")
-            if login:
-                opcion = input('Elija su estado:\n1. chat\n2. away\n3. xa\n4. dnd\n')
-                msg = input ('Ingese su mensaje: ')
-                cliente.change_Status(msg, opcion)
-            else:
-                print('No ha iniciado sesion')
-        
-        #Imprimir contactos
-        elif opcion == '11':
-            print ("*"*12,"opcion 11", "*"*12,"\nMostrar contactos")
-            if login:
-                list_users = cliente.show_Friends()
-                table = tabulate(list_users, headers=['Jid', 'Sub type'], tablefmt='grid')
-                print(table)
-            else:
-                print('No ha iniciado sesion')
-
-        #Enviar imagen
-        elif opcion == '12':
-            print ("*"*12,"opcion 12", "*"*12,"\nEnviar imagen")
-            if login:
-                user = input('Destinatario: ')
-                file_path = input('file path: ')
-                cliente.send_File(user, server, file_path)
-            else:
-                print('No ha iniciado sesion')
-
-        #Mostrar grupo
-        elif opcion == '13':
-            print ("*"*12,"opcion 13", "*"*12,"\nMostrar grupos")
-            if login:
-                rooms = cliente.show_Rooms()
-            else:
-                print('No ha iniciado sesion')
-
-        #Terminar programa
-        elif (opcion == '99'):
-            if login:
-                if cliente.connect():
-                        cliente.logout()
-                        login = False 
-                print ('\nHa elegido salir. Gracias por utilizar el programa')
-                menu = False
-            else:
-                menu = False
-        else:
-            print('\nEligió la opcion '+opcion+'. Esta opcion no es valida')
+                print("Invalid option")
+       
+    #Fail connection
+    else:
+        print("Unable to connect :(")
